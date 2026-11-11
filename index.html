@@ -9,18 +9,16 @@
     :root {
       color-scheme: light;
       --green: #064e3b;
-      --green-light: #dff3e8;
       --gold: #f2c75c;
       --ink: #15382c;
       --muted: #52665d;
-      --background: #f4f7f2;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      background: var(--background);
+      background: #f4f7f2;
       color: var(--ink);
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.5;
@@ -35,7 +33,7 @@
 
     .wrap { width: min(100%, 900px); margin: auto; }
 
-    .brand {
+    h1 {
       margin: 0;
       font-size: clamp(2.8rem, 10vw, 4rem);
       font-weight: 850;
@@ -43,7 +41,7 @@
       line-height: 1;
     }
 
-    .brand span { color: var(--gold); }
+    h1 span { color: var(--gold); }
     header p { margin: 14px 0 0; color: #d8eee3; }
 
     main {
@@ -85,15 +83,14 @@
       outline-offset: 4px;
     }
 
-    .controls {
+    .controls, .buttons {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 14px;
+      gap: 12px;
       flex-wrap: wrap;
-      margin-top: 16px;
     }
 
+    .controls { justify-content: space-between; margin-top: 16px; }
     #updated { color: var(--muted); font-size: 0.9rem; }
 
     button {
@@ -108,8 +105,16 @@
       cursor: pointer;
     }
 
-    button:hover { background: #09674e; }
+    button:hover { filter: brightness(1.1); }
     button:disabled { opacity: 0.65; cursor: wait; }
+    #nearest { background: var(--gold); color: var(--ink); }
+
+    #locationInfo {
+      margin: 18px 0 0;
+      padding: 14px;
+      border-radius: 12px;
+      background: #e8f4eb;
+    }
 
     .error {
       margin: 16px 0 0;
@@ -121,6 +126,7 @@
       overflow-wrap: anywhere;
     }
 
+    .error p { margin: 4px 0; }
     [hidden] { display: none !important; }
 
     .service {
@@ -139,21 +145,14 @@
     }
 
     #message { margin: 5px 0 0; white-space: pre-line; }
-
-    .stop-heading {
-      margin: 26px 0 14px;
-      font-size: 1.5rem;
-      letter-spacing: -0.03em;
-    }
-
+    h2 { margin: 26px 0 14px; font-size: 1.5rem; }
     .directions { display: grid; gap: 18px; }
-
     .direction { overflow: hidden; }
 
     .direction h3 {
       margin: 0;
       padding: 18px 20px;
-      background: var(--green-light);
+      background: #dff3e8;
       font-size: 1.1rem;
     }
 
@@ -185,13 +184,7 @@
       line-height: 1.1;
     }
 
-    .unit {
-      display: block;
-      color: var(--muted);
-      font-size: 0.78rem;
-      font-weight: 600;
-    }
-
+    .unit { display: block; color: var(--muted); font-size: 0.78rem; }
     .empty { margin: 0; padding: 22px 20px; color: var(--muted); }
 
     footer {
@@ -206,14 +199,13 @@
     @media (min-width: 700px) {
       .directions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       header { padding-top: 48px; }
-      .panel { padding: 26px; }
     }
   </style>
 </head>
 <body>
   <header>
     <div class="wrap">
-      <h1 class="brand">my<span>LUAS</span></h1>
+      <h1>my<span>LUAS</span></h1>
       <p>Your stop. Your next tram.</p>
     </div>
   </header>
@@ -224,10 +216,16 @@
       <select id="stop">
         <option value="MYS">MYS — loading stops…</option>
       </select>
+
       <div class="controls">
+        <div class="buttons">
+          <button id="nearest" type="button">⌖ Nearest stop</button>
+          <button id="refresh" type="button">Refresh now</button>
+        </div>
         <span id="updated" role="status">Last updated: waiting for live data</span>
-        <button id="refresh" type="button">Refresh now</button>
       </div>
+
+      <p id="locationInfo" role="status" hidden></p>
     </section>
 
     <div id="errors" class="error" role="alert" hidden></div>
@@ -237,7 +235,7 @@
       <p id="message">Checking the service…</p>
     </section>
 
-    <h2 id="stopName" class="stop-heading">Live arrivals</h2>
+    <h2 id="stopName">Live arrivals</h2>
     <div id="directions" class="directions" aria-label="Live tram arrivals">
       <p class="empty">Loading your next trams…</p>
     </div>
@@ -253,37 +251,39 @@
 
     const API = "https://luas-class.kluxy.app";
     const STORAGE_KEY = "myLUAS.stop";
+    const $ = id => document.getElementById(id);
 
-    const stopSelect = document.getElementById("stop");
-    const refreshButton = document.getElementById("refresh");
-    const updated = document.getElementById("updated");
-    const message = document.getElementById("message");
-    const stopName = document.getElementById("stopName");
-    const directions = document.getElementById("directions");
-    const errorBox = document.getElementById("errors");
-
+    const stopSelect = $("stop");
+    const nearestButton = $("nearest");
+    const refreshButton = $("refresh");
+    const locationInfo = $("locationInfo");
     const errors = new Map();
-    let stopsLoaded = false;
-    let busy = false;
+
+    let stops = [];
+    let stopsPromise = null;
     let selectedStop = "MYS";
-    let forecastController = null;
+    let refreshing = false;
+    let locating = false;
+    let selectionVersion = 0;
     let forecastVersion = 0;
+    let forecastController = null;
 
     function setError(key, text) {
       if (text) errors.set(key, text);
       else errors.delete(key);
 
-      errorBox.replaceChildren();
-      for (const text of errors.values()) {
+      $("errors").replaceChildren();
+
+      for (const value of errors.values()) {
         const paragraph = document.createElement("p");
-        paragraph.style.margin = "4px 0";
-        paragraph.textContent = text;
-        errorBox.append(paragraph);
+        paragraph.textContent = value;
+        $("errors").append(paragraph);
       }
-      errorBox.hidden = errors.size === 0;
+
+      $("errors").hidden = errors.size === 0;
     }
 
-    function describeError(error) {
+    function errorText(error) {
       return error instanceof Error ? error.message : String(error);
     }
 
@@ -296,12 +296,16 @@
 
       try {
         const response = await fetch(url, {
-          signal: controller.signal,
-          cache: "no-store"
+          cache: "no-store",
+          signal: controller.signal
         });
+
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText || "Request failed"}`);
+          throw new Error(
+            `HTTP ${response.status}: ${response.statusText || "Request failed"}`
+          );
         }
+
         return await response.json();
       } catch (error) {
         if (timedOut) throw new Error("The request timed out. Please try again.");
@@ -311,39 +315,68 @@
       }
     }
 
-    function showPlaceholder(text) {
-      directions.replaceChildren();
-      const paragraph = document.createElement("p");
-      paragraph.className = "empty";
-      paragraph.textContent = text;
-      directions.append(paragraph);
-    }
-
     try {
       selectedStop = localStorage.getItem(STORAGE_KEY) || "MYS";
     } catch (error) {
-      setError("storage", `Your stop cannot be remembered on this browser: ${describeError(error)}`);
+      setError("storage", `Cannot remember your stop: ${errorText(error)}`);
     }
 
     stopSelect.options[0].value = selectedStop;
     stopSelect.options[0].textContent = `${selectedStop} — loading stops…`;
 
-    async function loadStops() {
+    function saveStop() {
       try {
+        localStorage.setItem(STORAGE_KEY, selectedStop);
+        setError("storage", null);
+      } catch (error) {
+        setError("storage", `Cannot remember your stop: ${errorText(error)}`);
+      }
+    }
+
+    // Shared request: refresh and location lookup can both request the stop list.
+    async function loadStops() {
+      if (stops.length) return stops;
+      if (stopsPromise) return stopsPromise;
+
+      stopsPromise = (async () => {
         const data = await fetchJSON(`${API}/stops`);
 
-        if (!data || !Array.isArray(data.stops) || data.stops.length === 0) {
+        if (!data || !Array.isArray(data.stops) || !data.stops.length) {
           throw new Error("The stop list is missing or empty.");
         }
 
-        const validStops = data.stops.filter(stop =>
-          stop && typeof stop.id === "string" && stop.id &&
-          typeof stop.name === "string" &&
-          (stop.line === "red" || stop.line === "green")
-        );
+        const parsed = data.stops.map(stop => {
+          if (
+            !stop || typeof stop.id !== "string" || !stop.id ||
+            typeof stop.name !== "string" ||
+            !["red", "green"].includes(stop.line)
+          ) {
+            throw new Error("The stop list contains invalid stop information.");
+          }
 
-        if (validStops.length !== data.stops.length) {
-          throw new Error("The stop list contains invalid stop information.");
+          const validCoordinate = value =>
+            (typeof value === "number" || typeof value === "string") &&
+            String(value).trim() !== "" &&
+            Number.isFinite(Number(value));
+
+          if (
+            !validCoordinate(stop.lat) || !validCoordinate(stop.lng) ||
+            Math.abs(Number(stop.lat)) > 90 ||
+            Math.abs(Number(stop.lng)) > 180
+          ) {
+            throw new Error(`Invalid coordinates for ${stop.name}.`);
+          }
+
+          return { ...stop, lat: Number(stop.lat), lng: Number(stop.lng) };
+        });
+
+        let nextSelection = selectedStop;
+        if (!parsed.some(stop => stop.id === nextSelection)) {
+          nextSelection = "MYS";
+        }
+
+        if (!parsed.some(stop => stop.id === nextSelection)) {
+          throw new Error("The default stop MYS was not found.");
         }
 
         const fragment = document.createDocumentFragment();
@@ -352,7 +385,7 @@
           const group = document.createElement("optgroup");
           group.label = line === "red" ? "Red Line" : "Green Line";
 
-          validStops
+          parsed
             .filter(stop => stop.line === line)
             .sort((a, b) => a.name.localeCompare(b.name))
             .forEach(stop => {
@@ -365,21 +398,29 @@
           fragment.append(group);
         }
 
-        if (!validStops.some(stop => stop.id === selectedStop)) {
-          selectedStop = "MYS";
-        }
-
-        if (!validStops.some(stop => stop.id === selectedStop)) {
-          throw new Error("The default stop MYS was not found in the stop list.");
-        }
-
+        stops = parsed;
+        selectedStop = nextSelection;
         stopSelect.replaceChildren(fragment);
         stopSelect.value = selectedStop;
-        stopsLoaded = true;
         setError("stops", null);
+        return stops;
+      })();
+
+      try {
+        return await stopsPromise;
       } catch (error) {
-        setError("stops", `Could not load stops: ${describeError(error)}`);
+        setError("stops", `Could not load stops: ${errorText(error)}`);
+        throw error;
+      } finally {
+        stopsPromise = null;
       }
+    }
+
+    function placeholder(text) {
+      const paragraph = document.createElement("p");
+      paragraph.className = "empty";
+      paragraph.textContent = text;
+      $("directions").replaceChildren(paragraph);
     }
 
     function validateForecast(data) {
@@ -388,7 +429,7 @@
         !Array.isArray(data.directions) ||
         (data.message != null && typeof data.message !== "string")
       ) {
-        throw new Error("The live arrivals response has an unexpected format.");
+        throw new Error("The arrivals response has an unexpected format.");
       }
 
       for (const direction of data.directions) {
@@ -396,7 +437,7 @@
           !direction || typeof direction.name !== "string" ||
           !Array.isArray(direction.trams)
         ) {
-          throw new Error("Direction information is missing or invalid.");
+          throw new Error("Invalid direction information.");
         }
 
         for (const tram of direction.trams) {
@@ -406,19 +447,19 @@
             String(tram.due).trim() === "" ||
             !Number.isFinite(Number(tram.due)) || Number(tram.due) < 0
           ) {
-            throw new Error("A tram has invalid destination or arrival information.");
+            throw new Error("Invalid tram arrival information.");
           }
         }
       }
     }
 
     function renderForecast(data) {
-      stopName.textContent = data.stopName;
-      message.textContent = data.message?.trim() || "No service message provided.";
-      directions.replaceChildren();
+      $("stopName").textContent = data.stopName;
+      $("message").textContent = data.message?.trim() || "No service message provided.";
+      $("directions").replaceChildren();
 
-      if (data.directions.length === 0) {
-        showPlaceholder("No direction or tram information is currently available.");
+      if (!data.directions.length) {
+        placeholder("No direction or tram information is currently available.");
         return;
       }
 
@@ -430,11 +471,11 @@
         heading.textContent = direction.name;
         card.append(heading);
 
-        const nextTrams = [...direction.trams]
+        const trams = [...direction.trams]
           .sort((a, b) => Number(a.due) - Number(b.due))
           .slice(0, 3);
 
-        if (nextTrams.length === 0) {
+        if (!trams.length) {
           const empty = document.createElement("p");
           empty.className = "empty";
           empty.textContent = "No trams currently forecast in this direction.";
@@ -443,7 +484,7 @@
           const list = document.createElement("ul");
           list.className = "trams";
 
-          for (const tram of nextTrams) {
+          for (const tram of trams) {
             const due = Number(tram.due);
             const row = document.createElement("li");
             row.className = "tram";
@@ -471,7 +512,7 @@
           card.append(list);
         }
 
-        directions.append(card);
+        $("directions").append(card);
       }
     }
 
@@ -481,72 +522,210 @@
       const controller = new AbortController();
       forecastController = controller;
       const version = ++forecastVersion;
-      const stop = selectedStop;
 
       try {
         const data = await fetchJSON(
-          `${API}/forecast?stop=${encodeURIComponent(stop)}`,
+          `${API}/forecast?stop=${encodeURIComponent(selectedStop)}`,
           controller
         );
 
         if (version !== forecastVersion) return;
+
         validateForecast(data);
         renderForecast(data);
         setError("forecast", null);
 
-        updated.textContent = `Last updated: ${new Date().toLocaleTimeString(
-          "en-IE",
-          { hour: "2-digit", minute: "2-digit", second: "2-digit" }
-        )}`;
+        $("updated").textContent =
+          `Last updated: ${new Date().toLocaleTimeString("en-IE", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+          })}`;
       } catch (error) {
         if (version !== forecastVersion) return;
 
-        setError("forecast", `Could not load live trams: ${describeError(error)}`);
-        showPlaceholder("Live arrivals are unavailable. Retrying automatically.");
-        message.textContent = "Service message unavailable while live data cannot be loaded.";
-        updated.textContent = "Last updated: unavailable — live refresh failed";
+        setError("forecast", `Could not load live trams: ${errorText(error)}`);
+        placeholder("Live arrivals are unavailable. Retrying automatically.");
+        $("message").textContent = "Service message currently unavailable.";
+        $("updated").textContent = "Last updated: unavailable — refresh failed";
       } finally {
         if (version === forecastVersion) forecastController = null;
       }
     }
 
+    function selectStop(id, clearLocation = true) {
+      selectionVersion++;
+      selectedStop = id;
+      stopSelect.value = id;
+      saveStop();
+
+      if (clearLocation) {
+        locationInfo.hidden = true;
+        locationInfo.textContent = "";
+      }
+
+      $("stopName").textContent =
+        stopSelect.selectedOptions[0]?.textContent || id;
+      $("updated").textContent = "Last updated: waiting for this stop";
+      $("message").textContent = "Checking the service…";
+      placeholder("Loading your next trams…");
+      void loadForecast();
+    }
+
+    // Great-circle distance in kilometres using the haversine formula.
+    function haversine(lat1, lng1, lat2, lng2) {
+      const radians = degrees => degrees * Math.PI / 180;
+      const deltaLat = radians(lat2 - lat1);
+      const deltaLng = radians(lng2 - lng1);
+
+      const a =
+        Math.sin(deltaLat / 2) ** 2 +
+        Math.cos(radians(lat1)) *
+        Math.cos(radians(lat2)) *
+        Math.sin(deltaLng / 2) ** 2;
+
+      return 6371 * 2 * Math.atan2(
+        Math.sqrt(Math.max(0, Math.min(1, a))),
+        Math.sqrt(Math.max(0, 1 - a))
+      );
+    }
+
+    function getPosition() {
+      return new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0
+        });
+      });
+    }
+
+    function locationError(error) {
+      switch (error.code) {
+        case 1:
+          return "Location permission was denied. Allow location access in your browser settings and try again.";
+        case 2:
+          return "Your location is unavailable. Check your device's location settings and try again.";
+        case 3:
+          return "Finding your location timed out. Please try again.";
+        default:
+          return errorText(error);
+      }
+    }
+
+    async function findNearestStop() {
+      if (locating) return;
+
+      setError("location", null);
+      locationInfo.hidden = true;
+
+      if (!window.isSecureContext) {
+        setError("location", "Location access requires HTTPS or localhost.");
+        return;
+      }
+
+      if (!navigator.geolocation) {
+        setError("location", "This browser does not support geolocation.");
+        return;
+      }
+
+      locating = true;
+      nearestButton.disabled = true;
+      nearestButton.textContent = "Finding you…";
+
+      // A later manual stop selection takes precedence over this lookup.
+      const startingSelection = selectionVersion;
+
+      try {
+        // Request location directly from the user's button click.
+        const [position, allStops] = await Promise.all([
+          getPosition(),
+          loadStops()
+        ]);
+
+        if (startingSelection !== selectionVersion) return;
+
+        const { latitude, longitude, accuracy } = position.coords;
+        let closest = null;
+        let closestDistance = Infinity;
+
+        for (const stop of allStops) {
+          const distance = haversine(
+            latitude, longitude, stop.lat, stop.lng
+          );
+
+          if (distance < closestDistance) {
+            closest = stop;
+            closestDistance = distance;
+          }
+        }
+
+        if (!closest) throw new Error("No stops are available.");
+
+        const distanceText = closestDistance < 1
+          ? `${Math.round(closestDistance * 1000)} m`
+          : `${closestDistance.toLocaleString("en-IE", {
+              maximumFractionDigits: 1
+            })} km`;
+
+        const walkingMinutes = Math.ceil((closestDistance / 5) * 60);
+        const walkingText = walkingMinutes === 0
+          ? "less than 1 minute"
+          : `${walkingMinutes} ${walkingMinutes === 1 ? "minute" : "minutes"}`;
+
+        selectStop(closest.id, false);
+
+        locationInfo.textContent =
+          `${closest.name} is your nearest stop: ${distanceText} away. ` +
+          `Estimated walk: ${walkingText} at 5 km/h. ` +
+          `Based on straight-line distance; the walking route may be longer.` +
+          (Number.isFinite(accuracy)
+            ? ` Location accuracy: approximately ${Math.round(accuracy)} m.`
+            : "");
+
+        locationInfo.hidden = false;
+      } catch (error) {
+        if (startingSelection === selectionVersion) {
+          setError("location", `Could not find your nearest stop: ${locationError(error)}`);
+        }
+      } finally {
+        locating = false;
+        nearestButton.disabled = false;
+        nearestButton.textContent = "⌖ Nearest stop";
+      }
+    }
+
     async function refresh() {
-      if (busy) return;
-      busy = true;
+      if (refreshing) return;
+
+      refreshing = true;
       refreshButton.disabled = true;
       refreshButton.textContent = "Refreshing…";
 
       try {
-        if (!stopsLoaded) await loadStops();
+        if (!stops.length) {
+          try {
+            await loadStops();
+          } catch {
+            // The stop-list error is visible; still try the selected forecast.
+          }
+        }
+
         await loadForecast();
-      } catch (error) {
-        setError("unexpected", `Unexpected error: ${describeError(error)}`);
       } finally {
-        busy = false;
+        refreshing = false;
         refreshButton.disabled = false;
         refreshButton.textContent = "Refresh now";
       }
     }
 
     stopSelect.addEventListener("change", () => {
-      selectedStop = stopSelect.value;
-
-      try {
-        localStorage.setItem(STORAGE_KEY, selectedStop);
-        setError("storage", null);
-      } catch (error) {
-        setError("storage", `Your stop cannot be remembered: ${describeError(error)}`);
-      }
-
-      stopName.textContent = stopSelect.selectedOptions[0].textContent;
-      updated.textContent = "Last updated: waiting for this stop";
-      message.textContent = "Checking the service…";
-      showPlaceholder("Loading your next trams…");
-      void loadForecast();
+      setError("location", null);
+      selectStop(stopSelect.value);
     });
 
+    nearestButton.addEventListener("click", findNearestStop);
     refreshButton.addEventListener("click", refresh);
-
     window.addEventListener("online", refresh);
 
     void refresh();
